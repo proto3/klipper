@@ -17,7 +17,7 @@ class error(Exception):
 # Interface to low-level mcu and chelper code
 class MCU_stepper:
     def __init__(self, name, step_pin_params, dir_pin_params, step_dist,
-                 units_in_radians=False):
+                 units_in_radians=False, rt_params=None):
         self._name = name
         self._step_dist = step_dist
         self._units_in_radians = units_in_radians
@@ -43,6 +43,11 @@ class MCU_stepper:
         self._itersolve_generate_steps = self._ffi_lib.itersolve_generate_steps
         self._itersolve_check_active = self._ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
+        if rt_params is not None:
+            self._has_rt_mode = True
+            self._rt_params = rt_params
+        else:
+            self._has_rt_mode = False
     def get_mcu(self):
         return self._mcu
     def get_name(self, short=False):
@@ -76,6 +81,19 @@ class MCU_stepper:
                 self._oid, self._step_pin, self._dir_pin,
                 self._mcu.seconds_to_clock(min_stop_interval),
                 self._invert_step))
+        if(self._has_rt_mode):
+            self._mcu.add_config_cmd(
+                "config_stepper_rt_mode oid=%d control_freq=%hu input_cycle=%hu"
+                " input_factor=%hi max_freq=%u max_acc=%u" % (
+                    self._oid, self._rt_params['rt_control_freq'],
+                    self._rt_params['rt_input_cycle'],
+                    self._rt_params['rt_input_factor'],
+                    self._rt_params['rt_max_freq'],
+                    self._rt_params['rt_max_acc']))
+            self.set_host_mode_cmd = self._mcu.lookup_command(
+                "set_host_mode oid=%c clock=%u")
+            self.set_realtime_mode_cmd = self._mcu.lookup_command(
+                "set_realtime_mode oid=%c clock=%u min_pos=%i max_pos=%i")
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
         step_cmd_id = self._mcu.lookup_command_id(
@@ -90,6 +108,7 @@ class MCU_stepper:
         self._ffi_lib.stepcompress_fill(
             self._stepqueue, self._mcu.seconds_to_clock(max_error),
             self._invert_dir, step_cmd_id, dir_cmd_id)
+
     def get_oid(self):
         return self._oid
     def get_step_dist(self):
@@ -172,6 +191,19 @@ class MCU_stepper:
     def is_active_axis(self, axis):
         return self._ffi_lib.itersolve_is_active_axis(
             self._stepper_kinematics, axis)
+    def has_rt_mode(self):
+        return self._has_rt_mode
+    def set_host_mode(self, clock, minclock=0):
+        self.set_host_mode_cmd.send(
+            [self._oid, clock], minclock=minclock, reqclock=clock)
+    def set_realtime_mode(self, clock, posmin, posmax, minclock=0):
+        posmin_step = int((self._mcu_position_offset + posmin) / self._step_dist)
+        posmax_step = int((self._mcu_position_offset + posmax) / self._step_dist)
+        if self._invert_dir:
+            posmin_step, posmax_step = -posmax_step, -posmin_step
+        self.set_realtime_mode_cmd.send(
+            [self._oid, clock, posmin_step, posmax_step],
+            minclock=minclock, reqclock=clock)
 
 # Helper code to build a stepper object from a config section
 def PrinterStepper(config, units_in_radians=False):
@@ -184,8 +216,16 @@ def PrinterStepper(config, units_in_radians=False):
     dir_pin = config.get('dir_pin')
     dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
     step_dist = config.getfloat('step_distance', above=0.)
+
+    try:
+        rt_keys = ['rt_control_freq', 'rt_input_cycle', 'rt_input_factor',
+                   'rt_max_freq', 'rt_max_acc']
+        rt_params = {i: config.getint(i) for i in rt_keys}
+    except config.error:
+        rt_params = None
+
     mcu_stepper = MCU_stepper(name, step_pin_params, dir_pin_params, step_dist,
-                              units_in_radians)
+                              units_in_radians, rt_params)
     # Support for stepper enable pin handling
     stepper_enable = printer.load_object(config, 'stepper_enable')
     stepper_enable.register_stepper(mcu_stepper, config.get('enable_pin', None))
@@ -204,6 +244,7 @@ def PrinterStepper(config, units_in_radians=False):
 class PrinterRail:
     def __init__(self, config, need_position_minmax=True,
                  default_position_endstop=None, units_in_radians=False):
+        self._has_rt_mode = False
         # Primary stepper and endstop
         self.stepper_units_in_radians = units_in_radians
         self.steppers = []
@@ -280,6 +321,10 @@ class PrinterRail:
     def add_extra_stepper(self, config):
         stepper = PrinterStepper(config, self.stepper_units_in_radians)
         self.steppers.append(stepper)
+        self._has_rt_mode = stepper.has_rt_mode()
+        if(len(self.steppers) > 1 and self._has_rt_mode):
+            raise config.error("Realtime mode not available for multiple"
+            " stepper axis (see '%s')." % (config.get_name(),))
         if self.endstops and config.get('endstop_pin', None) is None:
             # No endstop defined - use primary endstop
             self.endstops[0][0].add_stepper(stepper)
@@ -307,6 +352,18 @@ class PrinterRail:
     def set_position(self, coord):
         for stepper in self.steppers:
             stepper.set_position(coord)
+    def has_rt_mode(self):
+        return self._has_rt_mode
+    def set_host_mode(self, clock):
+        if not self._has_rt_mode:
+            raise error("Host mode request on incompatible rail.")
+        self.steppers[0].set_host_mode(clock)
+    def set_realtime_mode(self, clock):
+        if not self._has_rt_mode:
+            raise error("Realtime mode request on incompatible rail.")
+        self.steppers[0].set_realtime_mode(clock,
+            self.position_min,
+            self.position_max)
 
 # Wrapper for dual stepper motor support
 def LookupMultiRail(config):

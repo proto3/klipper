@@ -13,6 +13,10 @@ uint8_t timer_is_before(uint32_t time1, uint32_t time2);
 uint32_t timer_read_time(void);
 void timer_kick(void);
 
+void time_freeze(uint32_t timeout);
+uint32_t time_unfreeze(void);
+uint8_t time_frozen(void);
+
 void *dynmem_start(void);
 void *dynmem_end(void);
 
