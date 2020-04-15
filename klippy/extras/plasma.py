@@ -6,8 +6,8 @@
 
 MSG_STATUS_BIT = 0
 MSG_ERROR_BIT  = 1
-STATUS_ON  = 0
-STATUS_OFF = 1
+STATUS_OFF = 0
+STATUS_ON  = 1
 ERROR_NONE          = 0
 ERROR_NO_TRANSFER   = 1
 ERROR_TRANSFER_LOST = 2
@@ -49,6 +49,7 @@ class Plasma:
         self.mcu.register_response(self._handle_rt_log, 'stepper_rt_log')
         self.error = ERROR_NONE
         self.status = STATUS_ON
+        self.error_displayed = False
 
     def build_config(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -62,16 +63,17 @@ class Plasma:
     def handle_plasma_status(self, params):
         seq = params['seq']
         status = params['status']
-        self.status = (status >> MSG_STATUS_BIT) & (1 << MSG_STATUS_BIT)
-        self.error = (status >> MSG_ERROR_BIT) & (3 << MSG_ERROR_BIT)
+        self.status = (status >> MSG_STATUS_BIT) & 0b00000001
+        self.error =  (status >> MSG_ERROR_BIT)  & 0b00000011
 
-        if self.status == STATUS_ON: # TODO display error only once per session instead of using STATUS_ON
+        if not self.error_displayed:
             if self.error == ERROR_NO_TRANSFER:
                 self.gcode.respond_info('Arc transfer timeout')
             elif self.error == ERROR_TRANSFER_LOST:
                 self.gcode.respond_info('Arc transfer lost')
+            self.error_displayed = True
 
-        self.plasma_status_ack_cmd.send([self.plasma_oid, seq])
+        self.plasma_status_ack_cmd.send([self.plasma_oid, seq], reqclock = 0)
 
     def _handle_rt_log(self, params):
         pos = params['pos']
@@ -91,6 +93,7 @@ class Plasma:
     def cmd_M3(self, gcmd):
         self.error = ERROR_NONE
         self.status = STATUS_ON
+        self.error_displayed = False
 
         # send start command
         clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())

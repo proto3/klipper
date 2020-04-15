@@ -12,13 +12,13 @@
 #include "board/misc.h" // timer_read_time
 
 #define MONITOR_FREQ 1000
-#define SEND_STATUS_FREQ 20
+#define SEND_STATUS_FREQ 5
 
 #define MSG_STATUS_BIT 0
 #define MSG_ERROR_BIT  1
 
-#define STATUS_ON  0
-#define STATUS_OFF 1
+#define STATUS_OFF 0
+#define STATUS_ON  1
 
 #define ERROR_NONE          0
 #define ERROR_NO_TRANSFER   1
