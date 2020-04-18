@@ -48,7 +48,7 @@ class Plasma:
 
         self.mcu.register_response(self._handle_rt_log, 'stepper_rt_log')
         self.error = ERROR_NONE
-        self.status = STATUS_ON
+        self.status = STATUS_OFF
         self.error_displayed = False
 
     def build_config(self):
@@ -91,6 +91,10 @@ class Plasma:
         self.mcu._clocksync.clock_avg -= clock
 
     def cmd_M3(self, gcmd):
+        if self.status == STATUS_ON:
+            self.gcode.respond_info('Warning: M3 needs M5 to be re-armed')
+            return
+
         self.error = ERROR_NONE
         self.status = STATUS_ON
         self.error_displayed = False
@@ -101,6 +105,9 @@ class Plasma:
         self.plasma_start_cmd.send([self.plasma_oid, clock], reqclock=clock)
 
     def cmd_M5(self, gcmd):
+        if self.status == STATUS_OFF:
+            self.gcode.respond_info('Warning: M5 while plasma already off')
+            return
         clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
         self.plasma_stop_cmd.send([self.plasma_oid, clock], minclock=self.last_M3, reqclock=clock)
         while(self.status != STATUS_OFF):
