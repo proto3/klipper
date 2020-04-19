@@ -229,3 +229,15 @@ send_status_task(void)
     }
 }
 DECL_TASK(send_status_task);
+
+void
+plasma_shutdown(void)
+{
+    uint8_t oid;
+    struct plasma_s *p;
+    foreach_oid(oid, p, command_config_plasma) {
+        gpio_out_write(p->start_pin, !p->start_val);
+
+    }
+}
+DECL_SHUTDOWN(plasma_shutdown);
