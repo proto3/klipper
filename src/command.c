@@ -12,6 +12,7 @@
 #include "board/pgm.h" // READP
 #include "command.h" // output_P
 #include "sched.h" // sched_is_shutdown
+#include "autoconf.h" // CONFIG_CLOCK_FREQ
 
 static uint8_t next_sequence = MESSAGE_DEST;
 
@@ -286,6 +287,26 @@ nak:
     return -1;
 }
 
+static uint8_t host_watchdog_init = 0;
+static uint32_t last_time_received = 0;
+
+void
+host_watchdog_reset(void)
+{
+    host_watchdog_init = 1;
+    last_time_received = timer_read_time();
+}
+
+void
+check_host_watchdog_task(void)
+{
+    uint32_t timeout = last_time_received + 2 * CONFIG_CLOCK_FREQ;
+    if(host_watchdog_init && timer_is_before(timeout, timer_read_time())) {
+        shutdown("Host host_watchdog timeout.");
+    }
+}
+DECL_TASK(check_host_watchdog_task);
+
 // Dispatch all the commands found in a message block
 void
 command_dispatch(uint8_t *buf, uint_fast8_t msglen)
@@ -302,6 +323,8 @@ command_dispatch(uint8_t *buf, uint_fast8_t msglen)
             continue;
         }
         irq_poll();
+
+        host_watchdog_reset();
         void (*func)(uint32_t*) = READP(cp->func);
         func(args);
     }
