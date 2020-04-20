@@ -90,11 +90,16 @@ class Plasma:
         self.mcu._clocksync.clock_est = (self.mcu._clocksync.clock_est[0], self.mcu._clocksync.clock_est[1]-clock, self.mcu._clocksync.clock_est[2])
         self.mcu._clocksync.clock_avg -= clock
 
+    def handle_jit_timeout(self):
+        self.gcode._respond_error('No next command in time, plasma stopped.')
+        self.cmd_M5(gcmd=None)
+
     def cmd_M3(self, gcmd):
         if self.status == STATUS_ON:
             self.gcode.respond_info('Warning: M3 needs M5 to be re-armed')
             return
 
+        self.gcode.enable_jit(self.handle_jit_timeout, 0.01)
         self.error = ERROR_NONE
         self.status = STATUS_ON
         self.error_displayed = False
@@ -108,6 +113,8 @@ class Plasma:
         if self.status == STATUS_OFF:
             self.gcode.respond_info('Warning: M5 while plasma already off')
             return
+
+        self.gcode.disable_jit()
         clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
         self.plasma_stop_cmd.send([self.plasma_oid, clock], minclock=self.last_M3, reqclock=clock)
         while(self.status != STATUS_OFF):

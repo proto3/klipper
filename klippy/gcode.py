@@ -128,6 +128,8 @@ class GCodeParser:
         self.move_transform = self.move_with_transform = None
         self.position_with_transform = (lambda: [0., 0., 0., 0.])
         self.toolhead = None
+        self.jit_timeout = 0.
+        self.jit = False
     def is_traditional_gcode(self, cmd):
         # A "traditional" g-code command is a letter and followed by a number
         try:
@@ -295,6 +297,8 @@ class GCodeParser:
             params = { parts[i]: parts[i+1].strip()
                        for i in range(1, numparts, 2) }
             gcmd = GCodeCommand(self, cmd, origline, params, need_ack)
+            if self.jit:
+                self.reactor.unregister_timer(self.timeout_timer)
             # Invoke handler for command
             handler = self.gcode_handlers.get(cmd, self.cmd_default)
             try:
@@ -313,6 +317,10 @@ class GCodeParser:
                 if not need_ack:
                     raise
             gcmd.ack()
+            if self.jit:
+                timeout = self.reactor.monotonic() + self.jit_timeout
+                self.timeout_timer = self.reactor.register_timer(
+                    self.jit_timeout_callback, waketime = timeout)
     m112_r = re.compile('^(?:[nN][0-9]+)?\s*[mM]112(?:\s|$)')
     def _process_data(self, eventtime):
         # Read input, separate by newline, and add to pending_commands
@@ -385,6 +393,18 @@ class GCodeParser:
         return self.mutex
     def create_gcode_command(self, command, commandline, params):
         return GCodeCommand(self, command, commandline, params, False)
+    # Just-In-Time control handling
+    def enable_jit(self, handler, timeout=0.05):
+        self.jit_timeout = timeout
+        self.jit_timeout_handler = handler
+        self.jit = True
+    def disable_jit(self):
+        self.jit = False
+    def jit_timeout_callback(self, eventtime):
+        with self.mutex:
+            self.jit_timeout_handler()
+            self.jit = False
+        return self.reactor.NEVER
     # Response handling
     def respond_raw(self, msg):
         if self.is_fileinput:
