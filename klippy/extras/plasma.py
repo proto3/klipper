@@ -17,10 +17,13 @@ class Plasma:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         ppins = self.printer.lookup_object('pins')
-        start_pin_params = ppins.lookup_pin(config.get('start_pin'), can_invert=True, can_pullup=True)
-        transfer_pin_params = ppins.lookup_pin(config.get('transfer_pin'), can_invert=True, can_pullup=True)
+        start_pin_params = ppins.lookup_pin(config.get('start_pin'),
+                                            can_invert=True, can_pullup=True)
+        transfer_pin_params = ppins.lookup_pin(config.get('transfer_pin'),
+                                               can_invert=True, can_pullup=True)
         self.mcu = start_pin_params['chip']
         self.plasma_oid = self.mcu.create_oid()
+        self.toolhead = None
 
         self.mcu.add_config_cmd("config_plasma oid=%d start_pin=%s"
         " start_invert=%d transfer_pin=%s transfer_invert=%d transfer_pullup=%d"
@@ -39,14 +42,11 @@ class Plasma:
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command("M3", self.cmd_M3)
         self.gcode.register_command("M5", self.cmd_M5)
-        self.gcode.register_command("M6", self.cmd_M6)
-        self.gcode.register_command("M7", self.cmd_M7)
         self.last_M3 = 0
 
         self.mcu.register_response(self.handle_plasma_status, 'plasma_status')
         self.mcu.register_response(self.handle_clock_drift, 'clock_drift')
 
-        self.mcu.register_response(self._handle_rt_log, 'stepper_rt_log')
         self.error = ERROR_NONE
         self.status = STATUS_OFF
         self.error_displayed = False
@@ -74,16 +74,6 @@ class Plasma:
             self.error_displayed = True
 
         self.plasma_status_ack_cmd.send([self.plasma_oid, seq], reqclock = 0)
-
-    def _handle_rt_log(self, params):
-        pos = params['pos']
-        error = params['error']
-
-        kin = self.printer.lookup_object('toolhead').get_kinematics()
-        s = kin.rails[2].steppers[0]
-        if s._invert_dir:
-            pos = -pos * s._step_dist - s._mcu_position_offset
-        self.gcode.respond_info('echo: THC_error ' + str(pos * 20) + ' ' + str(error))
 
     def handle_clock_drift(self, params):
         clock = params['clock']
@@ -119,16 +109,6 @@ class Plasma:
         self.plasma_stop_cmd.send([self.plasma_oid, clock], minclock=self.last_M3, reqclock=clock)
         while(self.status != STATUS_OFF):
             self.reactor.pause(self.reactor.monotonic() + 0.01)
-
-    def cmd_M6(self, gcmd):
-        rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
-        clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-        rail.set_realtime_mode(clock)
-
-    def cmd_M7(self, gcmd):
-        rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
-        clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-        rail.set_host_mode(clock)
 
 def load_config(config):
     return Plasma(config)
