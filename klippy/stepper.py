@@ -84,16 +84,19 @@ class MCU_stepper:
         if(self._has_rt_mode):
             self._mcu.add_config_cmd(
                 "config_stepper_rt_mode oid=%d control_freq=%hu input_cycle=%hu"
-                " input_factor=%hi max_freq=%u max_acc=%u" % (
-                    self._oid, self._rt_params['rt_control_freq'],
+                " input_factor=%hi max_freq=%u max_acc=%u a_coeff=%i b_coeff=%i"
+                % ( self._oid, self._rt_params['rt_control_freq'],
                     self._rt_params['rt_input_cycle'],
                     self._rt_params['rt_input_factor'],
                     self._rt_params['rt_max_freq'],
-                    self._rt_params['rt_max_acc']))
+                    self._rt_params['rt_max_acc'],
+                    self._rt_params['rt_a_coeff'] * (2**10),
+                    self._rt_params['rt_b_coeff'] * 1000))
             self.set_host_mode_cmd = self._mcu.lookup_command(
                 "set_host_mode oid=%c clock=%u")
             self.set_realtime_mode_cmd = self._mcu.lookup_command(
-                "set_realtime_mode oid=%c clock=%u min_pos=%i max_pos=%i")
+                "set_realtime_mode oid=%c clock=%u min_pos=%i max_pos=%i"
+                " target_mv=%i")
         self._mcu.add_config_cmd("reset_step_clock oid=%d clock=0"
                                  % (self._oid,), on_restart=True)
         step_cmd_id = self._mcu.lookup_command_id(
@@ -196,13 +199,13 @@ class MCU_stepper:
     def set_host_mode(self, clock, minclock=0):
         self.set_host_mode_cmd.send(
             [self._oid, clock], minclock=minclock, reqclock=clock)
-    def set_realtime_mode(self, clock, posmin, posmax, minclock=0):
+    def set_realtime_mode(self, clock, posmin, posmax, target_mv, minclock=0):
         posmin_step = int((self._mcu_position_offset + posmin) / self._step_dist)
         posmax_step = int((self._mcu_position_offset + posmax) / self._step_dist)
         if self._invert_dir:
             posmin_step, posmax_step = -posmax_step, -posmin_step
         self.set_realtime_mode_cmd.send(
-            [self._oid, clock, posmin_step, posmax_step],
+            [self._oid, clock, posmin_step, posmax_step, target_mv],
             minclock=minclock, reqclock=clock)
 
 # Helper code to build a stepper object from a config section
@@ -218,9 +221,12 @@ def PrinterStepper(config, units_in_radians=False):
     step_dist = config.getfloat('step_distance', above=0.)
 
     try:
-        rt_keys = ['rt_control_freq', 'rt_input_cycle', 'rt_input_factor',
-                   'rt_max_freq', 'rt_max_acc']
-        rt_params = {i: config.getint(i) for i in rt_keys}
+        rt_keys_int = ['rt_control_freq', 'rt_input_cycle', 'rt_max_freq',
+                       'rt_max_acc', 'rt_input_factor']
+        rt_keys_fp = ['rt_a_coeff', 'rt_b_coeff']
+        a_dict = {i: config.getint(i) for i in rt_keys_int}
+        b_dict = {i: config.getfloat(i) for i in rt_keys_fp}
+        rt_params = dict(a_dict, **b_dict)
     except config.error:
         rt_params = None
 
@@ -358,12 +364,11 @@ class PrinterRail:
         if not self._has_rt_mode:
             raise error("Host mode request on incompatible rail.")
         self.steppers[0].set_host_mode(clock)
-    def set_realtime_mode(self, clock):
+    def set_realtime_mode(self, clock, target_mv):
         if not self._has_rt_mode:
             raise error("Realtime mode request on incompatible rail.")
-        self.steppers[0].set_realtime_mode(clock,
-            self.position_min,
-            self.position_max)
+        self.steppers[0].set_realtime_mode(clock, self.position_min,
+                                           self.position_max, target_mv)
 
 # Wrapper for dual stepper motor support
 def LookupMultiRail(config):

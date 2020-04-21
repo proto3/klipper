@@ -20,6 +20,13 @@
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define abs(x) (((x) < 0) ? (-x) : (x))
 
+static inline int16_t div_pow2_16(int16_t x, uint8_t n) {
+    return (x + ((x >> 15) & ((1 << n) + ~0))) >> n;
+}
+static inline int32_t div_pow2_32(int32_t x, uint8_t n) {
+    return (x + ((x >> 31) & ((1 << n) + ~0))) >> n;
+}
+
 DECL_CONSTANT("STEP_DELAY", CONFIG_STEP_DELAY);
 
 
@@ -58,6 +65,8 @@ struct rt_data {
 
     uint8_t slowdown_pending;
     uint32_t slowdown_clock;
+
+    int32_t target_mv, a_coeff, b_coeff;
 };
 
 struct stepper {
@@ -258,6 +267,8 @@ command_config_stepper_rt_mode(uint32_t *args)
     s->rt.input_factor = args[3];
     s->rt.max_freq     = args[4];
     s->rt.max_acc      = args[5];
+    s->rt.a_coeff      = args[6];
+    s->rt.b_coeff      = args[7];
 
     s->rt.control_period = CONFIG_CLOCK_FREQ / s->rt.control_freq;
     s->rt.max_delta_freq = s->rt.max_acc / s->rt.control_freq;
@@ -271,7 +282,7 @@ command_config_stepper_rt_mode(uint32_t *args)
 }
 DECL_COMMAND(command_config_stepper_rt_mode,
              "config_stepper_rt_mode oid=%c control_freq=%hu input_cycle=%hu"
-             " input_factor=%i max_freq=%u max_acc=%u");
+             " input_factor=%i max_freq=%u max_acc=%u a_coeff=%i b_coeff=%i");
 
 // Return the 'struct stepper' for a given stepper oid
 struct stepper *
@@ -381,27 +392,21 @@ command_stepper_get_position(uint32_t *args)
 }
 DECL_COMMAND(command_stepper_get_position, "stepper_get_position oid=%c");
 
-static int32_t low_pass = 0;
-int32_t get_error(struct stepper *s)
+int32_t get_voltage_mv(struct stepper *s)
 {
-    uint8_t reading[2];
-    i2c_read(s->rt.i2c_config, 1, 0x00, 2, reading);
-    int32_t val = (reading[0] * 256 + reading[1]) >> 4;
-
-    // compute target speed
-    val = (val - 1024);
-
-    low_pass = (low_pass + val) / 2;
-    return low_pass;
+    uint8_t buf[2];
+    i2c_read(s->rt.i2c_config, 1, 0x00, 2, buf);
+    int16_t read_mv = div_pow2_16((int16_t)buf[0] << 8 | buf[1], 3);
+    return div_pow2_32(s->rt.a_coeff * read_mv, 10) + s->rt.b_coeff;
 }
 
 void rt_control_run(struct stepper *s)
 {
     // get target speed every rt.input_cycle cycles
     if(s->rt.cycle_count == 0) {
-        int32_t error = get_error(s);
-        sendf("stepper_rt_log pos=%i error=%i", s->rt.count, error);
-        s->rt.target_speed = error * s->rt.input_factor;
+        int32_t mv_error = get_voltage_mv(s) - s->rt.target_mv;
+        sendf("stepper_rt_log pos=%i error_mv=%i", s->rt.count, mv_error);
+        s->rt.target_speed = mv_error * s->rt.input_factor;
         s->rt.target_speed = abs_clamp(
                              s->rt.target_speed, (int32_t)s->rt.max_freq);
     }
@@ -606,6 +611,7 @@ command_set_realtime_mode(uint32_t *args)
         s->toggle_mode_timer.waketime = args[1];
         s->rt.min_pos = args[2];
         s->rt.max_pos = args[3];
+        s->rt.target_mv = args[4];
         s->toggle_mode_timer.func = toggle_mode_event;
         sched_add_timer(&s->toggle_mode_timer);
     }
@@ -614,7 +620,8 @@ command_set_realtime_mode(uint32_t *args)
     }
 }
 DECL_COMMAND(command_set_realtime_mode,
-             "set_realtime_mode oid=%c clock=%u min_pos=%i max_pos=%i");
+             "set_realtime_mode oid=%c clock=%u min_pos=%i max_pos=%i"
+             " target_mv=%i");
 
 // Stop all moves for a given stepper (used in end stop homing).  IRQs
 // must be off.

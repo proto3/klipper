@@ -24,21 +24,22 @@ class TorchHeightController:
         self.toolhead = self.printer.lookup_object('toolhead')
 
     def _handle_rt_log(self, params):
-        pos = params['pos']
-        error = params['error']
-
         kin = self.printer.lookup_object('toolhead').get_kinematics()
         s = kin.rails[2].steppers[0]
+        pos = params['pos'] * s._step_dist
         if s._invert_dir:
-            pos = -pos * s._step_dist - s._mcu_position_offset
-        self.gcode.respond_info('echo: THC_error ' + str(pos * 20) + ' ' + str(error))
+            pos = -pos
+        pos -= s._mcu_position_offset
+        error = float(params['error_mv']) / 1000
+        self.gcode.respond_info('echo: THC_error ' + str(pos) + ' ' + str(error))
 
     def cmd_M6(self, gcmd):
         if not self.enable:
             self.enable = True
+            voltage = gcmd.get_float('V', minval=50., maxval=200.)
             rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
             clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-            rail.set_realtime_mode(clock)
+            rail.set_realtime_mode(clock, int(voltage  * 1000))
         else:
             self.gcode._respond_error('THC already on')
 
