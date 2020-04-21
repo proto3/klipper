@@ -581,12 +581,17 @@ void
 command_set_host_mode(uint32_t *args)
 {
     struct stepper *s = stepper_oid_lookup(args[0]);
-    if(s->mode == REALTIME_MODE) {
-        schedule_slowdown(s, args[1]);
+    if(s->mode == REALTIME_MODE && s->toggle_mode_timer.func == NULL
+    && !s->rt.slowdown) {
+            schedule_slowdown(s, args[1]);
     }
-    else {
+    else if(s->mode == HOST_MODE && s->toggle_mode_timer.func != NULL
+    && !s->rt.slowdown_pending) {
         s->rt.slowdown_pending = 1;
         s->rt.slowdown_clock = args[1];
+    }
+    else {
+        shutdown("Prevent stepper host mode enable twice.");
     }
 }
 DECL_COMMAND(command_set_host_mode, "set_host_mode oid=%c clock=%u");

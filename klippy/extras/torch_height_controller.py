@@ -18,6 +18,7 @@ class TorchHeightController:
         self.gcode.register_command("M6", self.cmd_M6)
         self.gcode.register_command("M7", self.cmd_M7)
         self.mcu.register_response(self._handle_rt_log, 'stepper_rt_log')
+        self.enable = False
 
     def build_config(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -33,14 +34,22 @@ class TorchHeightController:
         self.gcode.respond_info('echo: THC_error ' + str(pos * 20) + ' ' + str(error))
 
     def cmd_M6(self, gcmd):
-        rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
-        clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-        rail.set_realtime_mode(clock)
+        if not self.enable:
+            self.enable = True
+            rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
+            clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
+            rail.set_realtime_mode(clock)
+        else:
+            self.gcode._respond_error('THC already on')
 
     def cmd_M7(self, gcmd):
-        rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
-        clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-        rail.set_host_mode(clock)
+        if self.enable:
+            self.enable = False
+            rail = self.printer.lookup_object('toolhead').get_kinematics().rails[2]
+            clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
+            rail.set_host_mode(clock)
+        else:
+            self.gcode._respond_error('THC already off')
 
 def load_config(config):
     return TorchHeightController(config)
