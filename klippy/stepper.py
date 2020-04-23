@@ -138,6 +138,17 @@ class MCU_stepper:
         if mcu_pos >= 0.:
             return int(mcu_pos + 0.5)
         return int(mcu_pos - 0.5)
+    # NOTE : resync_mcu_position is currently only working for cartesian robot,
+    # which is almost always the case for the plasma machines it is made for.
+    def resync_mcu_position(self):
+        params = self._get_position_cmd.send([self._oid])
+        mcu_pos = params['pos'] * self._step_dist
+        if self._invert_dir:
+            mcu_pos = -mcu_pos
+        mcu_pos -= self._mcu_position_offset
+        sk = self._stepper_kinematics
+        self._ffi_lib.itersolve_set_position(sk, 0, 0, mcu_pos)
+        return mcu_pos
     def get_tag_position(self):
         return self._tag_position
     def set_tag_position(self, position):
