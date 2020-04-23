@@ -89,7 +89,7 @@ class Plasma:
             self.gcode.respond_info('Warning: M3 needs M5 to be re-armed')
             return
 
-        self.gcode.enable_jit(self.handle_jit_timeout, 0.01)
+        self.gcode.enable_jit(self.handle_jit_timeout, 0.05)
         self.error = ERROR_NONE
         self.status = STATUS_ON
         self.error_displayed = False
@@ -100,13 +100,23 @@ class Plasma:
         self.plasma_start_cmd.send([self.plasma_oid, clock], reqclock=clock)
 
     def cmd_M5(self, gcmd):
+        print_time = self.toolhead.get_last_move_time()
+        clock = self.mcu.print_time_to_clock(print_time)
         if self.status == STATUS_OFF:
             self.gcode.respond_info('Warning: M5 while plasma already off')
-            return
+        else:
+            self.gcode.disable_jit()
+            self.plasma_stop_cmd.send([self.plasma_oid, clock],
+                                      minclock=self.last_M3, reqclock=clock)
 
-        self.gcode.disable_jit()
-        clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-        self.plasma_stop_cmd.send([self.plasma_oid, clock], minclock=self.last_M3, reqclock=clock)
+        # Even if plasma was off, M5 has to wait in order to be coherent with
+        # specs -> M5 is ALWAYS a blocking command
+        now = self.reactor.monotonic()
+        self.reactor.pause(now + print_time
+                           - self.mcu.estimated_print_time(now) + 0.05)
+
+        # Reactor pause may be insufficient due to clock shift, so we ensure
+        # we recovered from it through status message from MCU
         while(self.status != STATUS_OFF):
             self.reactor.pause(self.reactor.monotonic() + 0.01)
 

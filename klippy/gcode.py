@@ -394,7 +394,7 @@ class GCodeParser:
     def create_gcode_command(self, command, commandline, params):
         return GCodeCommand(self, command, commandline, params, False)
     # Just-In-Time control handling
-    def enable_jit(self, handler, timeout=0.05):
+    def enable_jit(self, handler, timeout):
         self.jit_timeout = timeout
         self.jit_timeout_handler = handler
         self.jit = True
