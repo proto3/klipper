@@ -11,6 +11,7 @@
 #include "irq.h" // irq_save
 #include "sched.h" // sched_timer_dispatch
 #include "watchdog.h" // sched_timer_dispatch
+#include "generic/serial_irq.h" // console_frozen_idle
 
 
 /****************************************************************
@@ -147,9 +148,7 @@ ISR(TIMER3_COMPA_vect)
 // Freeze all MCU time primitives (timers and timer_read_time()) until
 // time_unfreeze() is called or timeout occurs.
 // This is a non-blocking function, so it is the caller's responsibility to
-// call time_frozen() frequently to check for timeout.
-// As execution is frozen, active waiting won't affect performance and allows
-// to wait on events that doesn't provide interupt.
+// call time_frozen_idle() frequently to keep system alive during freeze.
 void
 time_freeze(uint32_t timeout)
 {
@@ -181,13 +180,21 @@ time_unfreeze(void)
     return calc.val;
 }
 
-// Return 1 while time is frozen, 0 otherwise.
-// Watchdog is also reset, allowing user to only care for time_frozen() while
-// waiting.
-uint8_t
-time_frozen(void)
+// Performs essential functions to keep system alive while frozen :
+//     - reset watchdog
+//     - drop incoming commands to prevent software buffer overflow
+// Must be called regularly during freeze
+void
+time_frozen_idle(void)
 {
+    console_frozen_idle();
     watchdog_reset();
+}
+
+// Return 1 if time is frozen, 0 otherwise, it can be used to check for timeout.
+uint8_t
+is_time_frozen(void)
+{
     return frozen;
 }
 

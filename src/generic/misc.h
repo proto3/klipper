@@ -15,7 +15,8 @@ void timer_kick(void);
 
 void time_freeze(uint32_t timeout);
 uint32_t time_unfreeze(void);
-uint8_t time_frozen(void);
+void time_frozen_idle(void);
+uint8_t is_time_frozen(void);
 
 void *dynmem_start(void);
 void *dynmem_end(void);

@@ -33,6 +33,7 @@ class Plasma:
         config.getint('transfer_timeout_ms')))
 
         self.cmd_queue = self.mcu.alloc_command_queue()
+        self.ack_queue = self.mcu.alloc_command_queue()
         self.mcu.register_config_callback(self.build_config)
         self.plasma_start_cmd = None
         self.plasma_stop_cmd = None
@@ -58,7 +59,7 @@ class Plasma:
         self.plasma_stop_cmd = self.mcu.lookup_command(
             "plasma_stop oid=%c clock=%u", cq=self.cmd_queue)
         self.plasma_status_ack_cmd = self.mcu.lookup_command(
-            "plasma_status_ack oid=%c seq=%c", cq=self.cmd_queue)
+            "plasma_status_ack oid=%c seq=%c", cq=self.ack_queue)
 
     def handle_plasma_status(self, params):
         seq = params['seq']
@@ -73,12 +74,11 @@ class Plasma:
                 self.gcode.respond_info('Arc transfer lost')
             self.error_displayed = True
 
-        self.plasma_status_ack_cmd.send([self.plasma_oid, seq], reqclock = 0)
+        self.plasma_status_ack_cmd.send([self.plasma_oid, seq])
 
     def handle_clock_drift(self, params):
-        clock = params['clock']
-        self.mcu._clocksync.clock_est = (self.mcu._clocksync.clock_est[0], self.mcu._clocksync.clock_est[1]-clock, self.mcu._clocksync.clock_est[2])
-        self.mcu._clocksync.clock_avg -= clock
+        self.mcu._clocksync.apply_clock_drift(params['clock'])
+        self.mcu.force_retransmit()
 
     def handle_jit_timeout(self):
         self.gcode._respond_error('No next command in time, plasma stopped.')

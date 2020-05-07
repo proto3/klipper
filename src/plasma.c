@@ -100,7 +100,8 @@ void start_plasma(struct plasma_s *p)
     // freeze time while waiting for arc transfer
     uint8_t transfer = 0;
     time_freeze(p->ticks_to_timeout);
-    while(!transfer && time_frozen()) {
+    while(!transfer && is_time_frozen()) {
+        time_frozen_idle();
         transfer = gpio_in_read(p->transfer_pin) == p->transfer_val;
     }
     uint32_t clock_drift = time_unfreeze();
