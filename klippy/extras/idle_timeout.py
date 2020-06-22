@@ -6,7 +6,6 @@
 import logging
 
 DEFAULT_IDLE_GCODE = """
-TURN_OFF_HEATERS
 M84
 """
 
