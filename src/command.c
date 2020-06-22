@@ -253,7 +253,7 @@ command_find_block(uint8_t *buf, uint_fast8_t buf_len, uint_fast8_t *pop_count)
     sync_state &= ~CF_NEED_VALID;
     *pop_count = msglen;
     // Discard commands received while time is frozen, it takes too much space
-    // to store everything on MCU. They will be retransmitted. 
+    // to store everything on MCU. They will be retransmitted.
     if (is_time_frozen()) {
         return -1;
     }

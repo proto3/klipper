@@ -69,9 +69,9 @@ class Plasma:
 
         if not self.error_displayed:
             if self.error == ERROR_NO_TRANSFER:
-                self.gcode.respond_info('Arc transfer timeout')
+                self.gcode._respond_error('Arc transfer timeout')
             elif self.error == ERROR_TRANSFER_LOST:
-                self.gcode.respond_info('Arc transfer lost')
+                self.gcode._respond_error('Arc transfer lost')
             self.error_displayed = True
 
         self.plasma_status_ack_cmd.send([self.plasma_oid, seq])
@@ -102,9 +102,7 @@ class Plasma:
     def cmd_M5(self, gcmd):
         print_time = self.toolhead.get_last_move_time()
         clock = self.mcu.print_time_to_clock(print_time)
-        if self.status == STATUS_OFF:
-            self.gcode.respond_info('Warning: M5 while plasma already off')
-        else:
+        if self.status == STATUS_ON:
             self.gcode.disable_jit()
             self.plasma_stop_cmd.send([self.plasma_oid, clock],
                                       minclock=self.last_M3, reqclock=clock)
