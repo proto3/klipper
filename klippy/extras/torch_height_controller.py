@@ -1,4 +1,4 @@
-# Support for plasma cutter
+# Support for torch height controller.
 #
 # Copyright (C) 2020  Lucas Felix <lucas.felix0738@gmail.com>
 #
@@ -11,72 +11,56 @@ class TorchHeightController:
         all_mcus = [m for n, m in self.printer.lookup_objects(module='mcu')]
         self.mcu = all_mcus[0]
         self.toolhead = None
-        self.rail = None
 
+        self.thc_oid = self.mcu.create_oid()
+        self.mcu.add_config_cmd("config_thc oid=%d rate=%u a_coeff=%u"
+            " b_coeff=%u" % (self.thc_oid, config.getint('rate'),
+            config.getfloat('a_coeff') * (2**10),
+            config.getfloat('b_coeff') * 1000))
+
+        self.cmd_queue = self.mcu.alloc_command_queue()
         self.mcu.register_config_callback(self.build_config)
+        self.thc_start_cmd = None
+        self.thc_stop_cmd = None
 
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command("M6", self.cmd_M6)
         self.gcode.register_command("M7", self.cmd_M7)
-        self.gcode.register_command("M8", self.cmd_M8)
-        self.mcu.register_response(self._handle_rt_log, 'stepper_rt_log')
+        self.mcu.register_response(self._handle_sample, 'thc_sample')
         self.enable = False
         self.last_M7 = None
 
     def build_config(self):
         self.toolhead = self.printer.lookup_object('toolhead')
-        self.rail = self.toolhead.get_kinematics().rails[2]
+        self.thc_start_cmd = self.mcu.lookup_command(
+            "start_thc oid=%c clock=%u", cq=self.cmd_queue)
+        self.thc_stop_cmd = self.mcu.lookup_command(
+            "stop_thc oid=%c clock=%u", cq=self.cmd_queue)
 
-    def _handle_rt_log(self, params):
-        kin = self.printer.lookup_object('toolhead').get_kinematics()
-        s = self.rail.steppers[0]
-        pos = params['pos'] * s._step_dist
-        if s._invert_dir:
-            pos = -pos
-        pos -= s._mcu_position_offset
-        error = float(params['error_mv']) / 1000
-        self.gcode.respond_info('echo: THC_error ' + str(pos) + ' ' + str(error))
+    def _handle_sample(self, params):
+        voltage = float(params['voltage_mv']) / 1000
+        self.gcode.respond_info('echo: THC_error ' + str(voltage))
 
     def cmd_M6(self, gcmd):
         if not self.enable:
+            voltage = gcmd.get_float('V', minval=0, maxval=300)
+            last_move = self.toolhead.get_last_move_time()
+            clock = self.mcu.print_time_to_clock(last_move)
+            self.thc_start_cmd.send([self.thc_oid, clock, int(voltage  * 1000)],
+                                     reqclock=clock)
             self.enable = True
-            voltage = gcmd.get_float('V', minval=50., maxval=200.)
-            clock = self.mcu.print_time_to_clock(self.toolhead.get_last_move_time())
-            self.rail.set_realtime_mode(clock, int(voltage  * 1000))
         else:
-            self.gcode._respond_error('THC already on')
+            self.gcode._respond_error('THC already ON')
 
     def cmd_M7(self, gcmd):
         if self.enable:
-            self.enable = False
             self.last_M7 = self.toolhead.get_last_move_time()
             clock = self.mcu.print_time_to_clock(self.last_M7)
-            self.rail.set_host_mode(clock)
+            self.thc_stop_cmd.send([self.thc_oid, clock], reqclock=clock)
+            self.enable = False
         else:
-            self.gcode._respond_error('THC already off')
-
-    def cmd_M8(self, gcmd):
-        if self.enable:
-            self.gcode._respond_error('Cannot resync with THC running.')
-            return
-        if self.last_M7 is None:
-            self.gcode.respond_info('No need to resync.')
-            return
-
-        # M8 has to be blocking to ensure not trying to synchronize before M7
-        # is effective.
-        now = self.reactor.monotonic()
-        self.reactor.pause(now + self.last_M7
-                           - self.mcu.estimated_print_time(now) + 0.05)
-        self.last_M7 = None
-
-        s = self.rail.steppers[0]
-        z_pos = s.resync_mcu_position()
-        curpos = self.toolhead.get_position()
-        self.toolhead.set_position([curpos[0], curpos[1], z_pos, curpos[3]],
-                                   homing_axes=(0, 1, 2))
-        self.gcode.reset_last_position()
+            self.gcode._respond_error('THC already OFF')
 
 def load_config(config):
     return TorchHeightController(config)
