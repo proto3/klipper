@@ -12,7 +12,6 @@
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // struct timer
 #include "stepper.h" // command_config_stepper
-
 #include <math.h> // sqrt
 
 #define abs_clamp(x, t) (((x) > (t)) ? (t) : (((x) < (-t)) ? (-t) : (x)))
@@ -20,15 +19,7 @@
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define abs(x) (((x) < 0) ? (-x) : (x))
 
-static inline int16_t div_pow2_16(int16_t x, uint8_t n) {
-    return (x + ((x >> 15) & ((1 << n) + ~0))) >> n;
-}
-static inline int32_t div_pow2_32(int32_t x, uint8_t n) {
-    return (x + ((x >> 31) & ((1 << n) + ~0))) >> n;
-}
-
 DECL_CONSTANT("STEP_DELAY", CONFIG_STEP_DELAY);
-
 
 /****************************************************************
  * Steppers
@@ -43,34 +34,29 @@ struct stepper_move {
 
 enum { MF_DIR=1<<0 };
 
-struct rt_data {
-    struct timer control_timer;
-    struct timer step_timer;
-    struct i2c_config i2c_config;
-
-    uint8_t slowdown, dir_save, current_dir;
-
-    uint16_t control_freq, input_cycle;
-    uint32_t control_period;
-    int32_t input_factor;
-    uint32_t min_freq, max_freq, max_acc;
+struct speed_mode {
+    struct timer update_timer, step_timer;
+    uint16_t update_rate;
+    uint32_t update_interval, min_freq, max_freq, max_acc;
 
     int32_t max_delta_freq, freq_limiter;
     int32_t current_speed, target_speed;
     uint32_t current_period;
 
-    int32_t count, min_pos, max_pos;
-    uint16_t cycle_count;
-    uint32_t last_step;
+    int32_t position, min_pos, max_pos;
+    // gcc (pre v6) does better optimization when uint8_t are bitfields
+    uint8_t flags : 8;
+};
 
-    uint8_t slowdown_pending;
-    uint32_t slowdown_clock;
-
-    int32_t target_mv, a_coeff, b_coeff;
+enum {
+    SM_SLOWING_DOWN=1<<0, SM_DIR_SAVE=1<<1, SM_CUR_DIR=1<<2,
+    SM_NEED_UPDATE=1<<3, SM_NEED_SLOWDOWN=1<<4
 };
 
 struct stepper {
-    struct timer time;
+    struct speed_mode spdm;
+    uint16_t steps_per_mm;
+    struct timer time, slowdown_timer;
     uint32_t interval;
     int16_t add;
 #if CONFIG_STEP_DELAY <= 0
@@ -86,29 +72,18 @@ struct stepper {
     uint32_t min_stop_interval;
     // gcc (pre v6) does better optimization when uint8_t are bitfields
     uint8_t flags : 8;
-
-    uint8_t mode, toggle_pending;
-    struct timer toggle_mode_timer;
-    struct rt_data rt;
 };
 
 enum { POSITION_BIAS=0x40000000 };
 
 enum {
     SF_LAST_DIR=1<<0, SF_NEXT_DIR=1<<1, SF_INVERT_STEP=1<<2, SF_HAVE_ADD=1<<3,
-    SF_LAST_RESET=1<<4, SF_NO_NEXT_CHECK=1<<5, SF_NEED_RESET=1<<6
+    SF_LAST_RESET=1<<4, SF_NO_NEXT_CHECK=1<<5, SF_NEED_RESET=1<<6,
+    SF_SPEED_MODE=1<<7
 };
 
-enum {
-    RT_STEP=1<<0, RT_CHANGE_DIR=1<<1, RT_TIMER_STOP=1<<2
-};
-
-enum {
-    HOST_MODE=0, REALTIME_MODE=1
-};
-
-static struct task_wake rt_control_wake;
-static struct task_wake toggle_mode_wake;
+static struct task_wake speed_mode_update_wake;
+static struct task_wake slowdown_wake;
 
 // Setup a stepper for the next move in its queue
 static uint_fast8_t
@@ -150,8 +125,8 @@ stepper_load_next(struct stepper *s, uint32_t min_next_time)
     // Add all steps to s->position (stepper_get_position() can calc mid-move)
     if (m->flags & MF_DIR) {
         s->position = -s->position + m->count;
-        if(s->mode == REALTIME_MODE) {
-            s->rt.dir_save = !s->rt.dir_save;
+        if(s->flags & SF_SPEED_MODE) {
+            s->spdm.flags ^= SM_DIR_SAVE;
         }
         else {
             gpio_out_toggle_noirq(s->dir_pin);
@@ -250,39 +225,33 @@ command_config_stepper(uint32_t *args)
     s->dir_pin = gpio_out_setup(args[2], 0);
     s->min_stop_interval = args[3];
     s->position = -POSITION_BIAS;
-    s->mode = HOST_MODE;
-    s->toggle_pending = 0;
+    s->spdm.flags = 0;
+    s->steps_per_mm = args[5]; // This is a rounded value, but it only
+                               // slightly affects speed and
+                               // acceleration limits.
     move_request_size(sizeof(struct stepper_move));
 }
 DECL_COMMAND(command_config_stepper,
              "config_stepper oid=%c step_pin=%c dir_pin=%c"
-             " min_stop_interval=%u invert_step=%c");
+             " min_stop_interval=%u invert_step=%c steps_per_mm=%hu");
 
 void
-command_config_stepper_rt_mode(uint32_t *args)
+command_config_stepper_speed_mode(uint32_t *args)
 {
     struct stepper *s = stepper_oid_lookup(args[0]);
-    s->rt.control_freq = args[1];
-    s->rt.input_cycle  = args[2];
-    s->rt.input_factor = args[3];
-    s->rt.max_freq     = args[4];
-    s->rt.max_acc      = args[5];
-    s->rt.a_coeff      = args[6];
-    s->rt.b_coeff      = args[7];
+    s->spdm.update_rate = args[1];
+    s->spdm.max_freq    = args[2] * s->steps_per_mm; // from mm.s-1 to step.s-1
+    s->spdm.max_acc     = args[3] * s->steps_per_mm; // from mm.s-2 to step.s-2
 
-    s->rt.control_period = CONFIG_CLOCK_FREQ / s->rt.control_freq;
-    s->rt.max_delta_freq = s->rt.max_acc / s->rt.control_freq;
+    s->spdm.update_interval = CONFIG_CLOCK_FREQ / s->spdm.update_rate;
+    s->spdm.max_delta_freq  = s->spdm.max_acc / s->spdm.update_rate;
+
     // to ensure start off is possible, min_freq is never above max_delta_freq
-    s->rt.min_freq = min(100, s->rt.max_delta_freq);
-    s->rt.slowdown_pending = 0;
-
-    s->rt.i2c_config = i2c_setup(0, 400000, 0x48);
-    uint8_t ads1015_conf[3] = {0x01, 0x42, 0x63};
-    i2c_write(s->rt.i2c_config, 3, ads1015_conf);
+    s->spdm.min_freq = min(100, s->spdm.max_delta_freq);
 }
-DECL_COMMAND(command_config_stepper_rt_mode,
-             "config_stepper_rt_mode oid=%c control_freq=%hu input_cycle=%hu"
-             " input_factor=%i max_freq=%u max_acc=%u a_coeff=%i b_coeff=%i");
+DECL_COMMAND(command_config_stepper_speed_mode,
+             "config_stepper_speed_mode oid=%c rate=%hu max_velocity=%u"
+             " max_accel=%u");
 
 // Return the 'struct stepper' for a given stepper oid
 struct stepper *
@@ -392,236 +361,183 @@ command_stepper_get_position(uint32_t *args)
 }
 DECL_COMMAND(command_stepper_get_position, "stepper_get_position oid=%c");
 
-int32_t get_voltage_mv(struct stepper *s)
+void
+stepper_set_target_speed(struct stepper* s, int32_t target_speed)
 {
-    uint8_t buf[2];
-    i2c_read(s->rt.i2c_config, 1, 0x00, 2, buf);
-    int16_t read_mv = div_pow2_16((int16_t)buf[0] << 8 | buf[1], 3);
-    return div_pow2_32(s->rt.a_coeff * read_mv, 10) + s->rt.b_coeff;
+        s->spdm.target_speed = target_speed * s->steps_per_mm;
+        s->spdm.target_speed = abs_clamp(s->spdm.target_speed,
+                                         (int32_t)s->spdm.max_freq);
 }
 
-void rt_control_run(struct stepper *s)
+void
+speed_mode_update(struct stepper *s)
 {
-    // get target speed every rt.input_cycle cycles
-    if(s->rt.cycle_count == 0) {
-        int32_t mv_error = get_voltage_mv(s) - s->rt.target_mv;
-        sendf("stepper_rt_log pos=%i error_mv=%i", s->rt.count, mv_error);
-        s->rt.target_speed = mv_error * s->rt.input_factor;
-        s->rt.target_speed = abs_clamp(
-                             s->rt.target_speed, (int32_t)s->rt.max_freq);
-    }
+    s->spdm.flags &= ~SM_NEED_UPDATE;
 
     // apply position based limiter (to avoid stepper max position overrun)
-    int32_t dist_to_min = max(0, s->rt.count - (s->rt.min_pos + 1));
-    int32_t dist_to_max = max(0, (s->rt.max_pos - 1) - s->rt.count);
-    uint32_t steps_to_stop = pow(s->rt.max_freq, 2) / (2 * s->rt.max_acc)
-                             + 2 * s->rt.max_freq / s->rt.control_freq;
+    int32_t dist_to_min = max(0, s->spdm.position - (s->spdm.min_pos + 1));
+    int32_t dist_to_max = max(0, (s->spdm.max_pos - 1) - s->spdm.position);
+    uint32_t steps_to_stop = pow(s->spdm.max_freq, 2) / (2 * s->spdm.max_acc)
+                             + 2 * s->spdm.max_freq / s->spdm.update_rate;
 
     if(dist_to_min <= steps_to_stop)
     {
-        int32_t limit = sqrt((float)s->rt.max_acc * dist_to_min);
+        int32_t limit = sqrt((float)s->spdm.max_acc * dist_to_min);
         limit = max(0, limit);
-        s->rt.target_speed = max(s->rt.target_speed, -limit);
+        s->spdm.target_speed = max(s->spdm.target_speed, -limit);
     }
     if(dist_to_max <= steps_to_stop)
     {
-        int32_t limit = sqrt((float)s->rt.max_acc * dist_to_max);
+        int32_t limit = sqrt((float)s->spdm.max_acc * dist_to_max);
         limit = max(0, limit);
-        s->rt.target_speed = min(s->rt.target_speed, limit);
+        s->spdm.target_speed = min(s->spdm.target_speed, limit);
     }
 
     // time based limiter (for slowdown)
-    if(s->rt.slowdown) {
-        if(s->rt.freq_limiter < s->rt.max_delta_freq) {
-            sched_del_timer(&s->rt.step_timer);
-            sched_del_timer(&s->rt.control_timer);
-            if(s->rt.current_dir != s->rt.dir_save) {
+    if(s->spdm.flags & SM_SLOWING_DOWN) {
+        if(s->spdm.freq_limiter < s->spdm.max_delta_freq) {
+            sched_del_timer(&s->spdm.step_timer);
+            sched_del_timer(&s->spdm.update_timer);
+            if(!!(s->spdm.flags & SM_CUR_DIR) !=
+               !!(s->spdm.flags & SM_DIR_SAVE)) {
                 gpio_out_toggle_noirq(s->dir_pin);
             }
             if(s->position & 0x80000000) {
-                s->position = -(s->rt.count + POSITION_BIAS) | 0x80000000;
+                s->position = -(s->spdm.position + POSITION_BIAS) | 0x80000000;
             }
             else {
-                s->position = s->rt.count + POSITION_BIAS;
+                s->position = s->spdm.position + POSITION_BIAS;
             }
-            s->mode = HOST_MODE;
+            s->flags &= ~SF_SPEED_MODE;
             return;
         }
-        s->rt.freq_limiter -= s->rt.max_delta_freq;
-        s->rt.target_speed = abs_clamp(s->rt.target_speed, s->rt.freq_limiter);
+        s->spdm.freq_limiter -= s->spdm.max_delta_freq;
+        s->spdm.target_speed = abs_clamp(s->spdm.target_speed,
+                                         s->spdm.freq_limiter);
     }
 
     // compute new reachable speed according to acceleration
-    int32_t delta = s->rt.target_speed - s->rt.current_speed;
-    s->rt.current_speed += abs_clamp(delta, s->rt.max_delta_freq);
+    int32_t delta = s->spdm.target_speed - s->spdm.current_speed;
+    s->spdm.current_speed += abs_clamp(delta, s->spdm.max_delta_freq);
 
     // speed is either above min_speed, either null
-    if (abs(s->rt.current_speed) < s->rt.min_freq) {
-        s->rt.current_speed = 0;
+    if (abs(s->spdm.current_speed) < s->spdm.min_freq) {
+        s->spdm.current_speed = 0;
     }
 
     // store previous direction
-    uint8_t prev_dir = s->rt.current_speed < 0;
+    uint8_t prev_dir = s->spdm.current_speed < 0;
 
     // compute period according to speed, period of zero means no speed
-    if(abs(s->rt.current_speed) > 0) {
-        s->rt.current_period = CONFIG_CLOCK_FREQ / abs(s->rt.current_speed);
+    if(abs(s->spdm.current_speed) > 0) {
+        s->spdm.current_period = CONFIG_CLOCK_FREQ / abs(s->spdm.current_speed);
     }
     else {
-        s->rt.current_period = 0;
+        s->spdm.current_period = 0;
     }
 
     irq_disable();
     // possibly apply direction change
-    if (prev_dir != s->rt.current_dir) {
+    if (!!(prev_dir) != !!(s->spdm.flags & SM_CUR_DIR)) {
         gpio_out_toggle_noirq(s->dir_pin);
-        s->rt.current_dir = !s->rt.current_dir;
+        s->spdm.flags ^= SM_CUR_DIR;
     }
     irq_enable();
-
-    s->rt.cycle_count = (s->rt.cycle_count + 1) % s->rt.input_cycle;
 }
 
 static uint_fast8_t
-rt_step_event(struct timer *t)
+speed_mode_step_event(struct timer *t)
 {
-    struct rt_data *rt = container_of(t, struct rt_data, step_timer);
-    struct stepper *s = container_of(rt, struct stepper, rt);
-    if(s->rt.current_period == 0) {
-        t->waketime += s->rt.control_period;
+    struct stepper *s = container_of(
+                        container_of(t, struct speed_mode, step_timer),
+                        struct stepper, spdm);
+    if(s->spdm.current_period == 0) {
+        t->waketime += s->spdm.update_interval;
     }
     else {
         gpio_out_toggle_noirq(s->step_pin);
-        s->rt.last_step = t->waketime;
-        t->waketime += s->rt.current_period;
-        s->rt.count += s->rt.current_dir ? -1 : 1;
+        t->waketime += s->spdm.current_period;
+        s->spdm.position += (s->spdm.flags & SM_CUR_DIR) ? -1 : 1;
         gpio_out_toggle_noirq(s->step_pin);
     }
     return SF_RESCHEDULE;
 }
 
 static uint_fast8_t
-rt_control_event(struct timer *t)
+speed_mode_update_event(struct timer *t)
 {
-    struct rt_data *rt = container_of(t, struct rt_data, control_timer);
-    struct stepper *s = container_of(rt, struct stepper, rt);
-    t->waketime += s->rt.control_period;
-    sched_wake_task(&rt_control_wake);
+    struct stepper *s = container_of(
+                        container_of(t, struct speed_mode, update_timer),
+                        struct stepper, spdm);
+    t->waketime += s->spdm.update_interval;
+    s->spdm.flags |= SM_NEED_UPDATE;
+    sched_wake_task(&speed_mode_update_wake);
     return SF_RESCHEDULE;
 }
 
 uint_fast8_t
-toggle_mode_event(struct timer *t)
+slowdown_event(struct timer *t)
 {
-    struct stepper *s = container_of(t, struct stepper, toggle_mode_timer);
-    s->toggle_pending = 1;
-    sched_wake_task(&toggle_mode_wake);
-    t->func = NULL;
+    struct stepper *s = container_of(t, struct stepper, slowdown_timer);
+    s->spdm.flags |= SM_NEED_SLOWDOWN;
+    sched_wake_task(&slowdown_wake);
     return SF_DONE;
 }
+
 void
-
-schedule_slowdown(struct stepper *s, uint32_t clock)
+stepper_schedule_position_mode(struct stepper *s, uint32_t clock)
 {
-    // call transition in advance to slowdown
-    uint32_t slowdown_time = s->rt.control_period * (s->rt.max_freq / s->rt.max_delta_freq);
+    uint32_t slowdown_duration = s->spdm.update_interval *
+                                 (s->spdm.max_freq / s->spdm.max_delta_freq);
 
-    if(timer_is_before(clock - slowdown_time, timer_read_time())) {
+    // start slowing down now
+    if(timer_is_before(clock - slowdown_duration, timer_read_time())) {
         uint32_t rest_time = clock - timer_read_time();
-        s->rt.freq_limiter = s->rt.max_delta_freq * rest_time
-                             / s->rt.control_period;
-        s->rt.slowdown = 1;
+        s->spdm.freq_limiter = s->spdm.max_delta_freq * rest_time /
+                               s->spdm.update_interval;
+        s->spdm.flags |= SM_SLOWING_DOWN;
     }
+    // set a timer for later
     else {
-        sched_del_timer(&s->toggle_mode_timer);
-        s->toggle_mode_timer.waketime = clock - slowdown_time;
-        s->toggle_mode_timer.func = toggle_mode_event;
-        sched_add_timer(&s->toggle_mode_timer);
+        sched_del_timer(&s->slowdown_timer);
+        s->slowdown_timer.waketime = clock - slowdown_duration;
+        s->slowdown_timer.func = slowdown_event;
+        sched_add_timer(&s->slowdown_timer);
     }
 }
 
-void host_to_realtime_mode(struct stepper *s)
-{
-    if(!(s->flags & SF_LAST_DIR)) {
-        gpio_out_toggle_noirq(s->dir_pin);
-        s->rt.dir_save = 1;
-    }
-    else {
-        s->rt.dir_save = 0;
-    }
-    s->rt.count = stepper_get_position(s) - POSITION_BIAS;
-    s->rt.current_dir    = 0;
-    s->rt.slowdown       = 0;
-    s->rt.current_period = 0;
-    s->rt.current_speed  = 0;
-    s->rt.cycle_count    = 0;
-    s->rt.last_step      = 0;
-    s->rt.cycle_count    = 0;
-
-    s->rt.control_timer.func = rt_control_event;
-    s->rt.control_timer.waketime = timer_read_time() + CONFIG_CLOCK_FREQ / 10000;
-    sched_add_timer(&s->rt.control_timer);
-
-    s->rt.step_timer.func = rt_step_event;
-    s->rt.step_timer.waketime = timer_read_time() + CONFIG_CLOCK_FREQ / 5000;
-    sched_add_timer(&s->rt.step_timer);
-
-    s->mode = REALTIME_MODE;
-
-    if(s->rt.slowdown_pending) {
-        schedule_slowdown(s, s->rt.slowdown_clock);
-        s->rt.slowdown_pending = 0;
-    }
-}
-
-void realtime_to_host_mode(struct stepper *s)
-{
-    s->rt.freq_limiter = s->rt.max_freq;
-    s->rt.slowdown = 1;
-    // realtime control will switch mode after slowdown
-}
-
-// Set stepper host control mode
 void
-command_set_host_mode(uint32_t *args)
+stepper_set_speed_mode(struct stepper *s, int32_t min_pos, int32_t max_pos)
 {
-    struct stepper *s = stepper_oid_lookup(args[0]);
-    if(s->mode == REALTIME_MODE && s->toggle_mode_timer.func == NULL
-    && !s->rt.slowdown) {
-            schedule_slowdown(s, args[1]);
-    }
-    else if(s->mode == HOST_MODE && s->toggle_mode_timer.func != NULL
-    && !s->rt.slowdown_pending) {
-        s->rt.slowdown_pending = 1;
-        s->rt.slowdown_clock = args[1];
-    }
-    else {
-        shutdown("Prevent stepper host mode enable twice.");
-    }
-}
-DECL_COMMAND(command_set_host_mode, "set_host_mode oid=%c clock=%u");
+        s->spdm.min_pos = min_pos;
+        s->spdm.max_pos = max_pos;
 
-// Set stepper realtime control mode
-void
-command_set_realtime_mode(uint32_t *args)
-{
-    struct stepper *s = stepper_oid_lookup(args[0]);
-    if(s->mode == HOST_MODE && s->toggle_mode_timer.func == NULL) {
-        sched_del_timer(&s->toggle_mode_timer);
-        s->toggle_mode_timer.waketime = args[1];
-        s->rt.min_pos = args[2];
-        s->rt.max_pos = args[3];
-        s->rt.target_mv = args[4];
-        s->toggle_mode_timer.func = toggle_mode_event;
-        sched_add_timer(&s->toggle_mode_timer);
-    }
-    else {
-        shutdown("Prevent stepper realtime mode enable twice.");
-    }
+        // save direction from position mode
+        if(!(s->flags & SF_LAST_DIR)) {
+            gpio_out_toggle_noirq(s->dir_pin);
+            s->spdm.flags |= SM_DIR_SAVE;
+        }
+        else {
+            s->spdm.flags &= ~SM_DIR_SAVE;
+        }
+        s->spdm.flags &= ~(SM_CUR_DIR | SM_SLOWING_DOWN);
+        s->spdm.position = stepper_get_position(s) - POSITION_BIAS;
+        s->spdm.current_period = 0;
+        s->spdm.current_speed  = 0;
+        s->spdm.target_speed   = 0;
+
+        uint32_t now = timer_read_time();
+        sched_wake_task(&speed_mode_update_wake);
+        s->spdm.update_timer.func = speed_mode_update_event;
+        s->spdm.update_timer.waketime = now + s->spdm.update_interval;
+        sched_add_timer(&s->spdm.update_timer);
+
+        s->spdm.step_timer.func = speed_mode_step_event;
+        s->spdm.step_timer.waketime = now + timer_from_us(200);
+        sched_add_timer(&s->spdm.step_timer);
+
+        s->flags |= SF_SPEED_MODE | SM_NEED_UPDATE;
 }
-DECL_COMMAND(command_set_realtime_mode,
-             "set_realtime_mode oid=%c clock=%u min_pos=%i max_pos=%i"
-             " target_mv=%i");
 
 // Stop all moves for a given stepper (used in end stop homing).  IRQs
 // must be off.
@@ -643,41 +559,37 @@ stepper_stop(struct stepper *s)
 }
 
 void
-toggle_mode_task(void)
+slowdown_task(void)
 {
-    if (!sched_check_wake(&toggle_mode_wake))
+    if (!sched_check_wake(&slowdown_wake))
         return;
 
     uint8_t i;
     struct stepper *s;
     foreach_oid(i, s, command_config_stepper) {
-        if(s->toggle_pending) {
-            if(s->mode == HOST_MODE) {
-                host_to_realtime_mode(s);
-            }
-            else {
-                realtime_to_host_mode(s);
-            }
-            s->toggle_pending = 0;
+        if(s->spdm.flags & SM_NEED_SLOWDOWN) {
+            s->spdm.freq_limiter = s->spdm.max_freq;
+            s->spdm.flags |= SM_SLOWING_DOWN;
+            s->spdm.flags &= ~SM_NEED_SLOWDOWN;
         }
     }
 }
-DECL_TASK(toggle_mode_task);
+DECL_TASK(slowdown_task);
 
 void
-rt_control_task(void)
+speed_mode_update_task(void)
 {
-    if (!sched_check_wake(&rt_control_wake))
+    if (!sched_check_wake(&speed_mode_update_wake))
         return;
 
     uint8_t i;
     struct stepper *s;
     foreach_oid(i, s, command_config_stepper) {
-        if(s->mode == REALTIME_MODE)
-            rt_control_run(s);
+        if((s->flags & SF_SPEED_MODE) && (s->spdm.flags & SM_NEED_UPDATE))
+            speed_mode_update(s);
     }
 }
-DECL_TASK(rt_control_task);
+DECL_TASK(speed_mode_update_task);
 
 void
 stepper_shutdown(void)
