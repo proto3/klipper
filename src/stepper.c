@@ -369,6 +369,23 @@ stepper_set_target_speed(struct stepper* s, int32_t target_speed)
                                          (int32_t)s->spdm.max_freq);
 }
 
+// Return the current stepper position without bias and no matter which mode is
+// running. Caller must disable irqs.
+int32_t
+stepper_position(struct stepper *s)
+{
+    if(s->flags & SF_SPEED_MODE)
+        return s->spdm.position;
+    else
+        return stepper_get_position(s) - POSITION_BIAS;
+}
+
+uint16_t
+stepper_speed(struct stepper *s)
+{
+    return s->count ? CONFIG_CLOCK_FREQ / (s->steps_per_mm * s->interval) : 0;
+}
+
 void
 speed_mode_update(struct stepper *s)
 {
