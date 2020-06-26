@@ -144,6 +144,7 @@ setup_event(struct timer *timer)
     {
         stop_plasma(p);
     }
+    timer->func = NULL;
     return SF_DONE;
 }
 
@@ -159,6 +160,8 @@ command_config_plasma(uint32_t *args)
     p->status = STATUS_OFF;
     p->error = ERROR_NONE;
     p->seq = 255;
+
+    p->setup_timer.func = NULL;
 }
 DECL_COMMAND(command_config_plasma,
              "config_plasma oid=%c start_pin=%u transfer_pin=%u"
@@ -170,6 +173,8 @@ command_plasma_start(uint32_t *args)
     struct plasma *p = oid_lookup(args[0], command_config_plasma);
     p->cmd = TURN_ON;
     sched_del_timer(&p->setup_timer);
+    if(p->setup_timer.func != NULL)
+        shutdown("double plasma com start");
     p->setup_timer.func = setup_event;
     p->setup_timer.waketime = args[1];
     sched_add_timer(&p->setup_timer);
@@ -182,6 +187,8 @@ command_plasma_stop(uint32_t *args)
     struct plasma *p = oid_lookup(args[0], command_config_plasma);
     p->cmd = TURN_OFF;
     sched_del_timer(&p->setup_timer);
+    if(p->setup_timer.func != NULL)
+        shutdown("double plasma com stop");
     p->setup_timer.func = setup_event;
     p->setup_timer.waketime = args[1];
     sched_add_timer(&p->setup_timer);

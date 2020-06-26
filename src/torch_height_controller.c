@@ -172,6 +172,11 @@ allocate_session(struct thc *thc)
 void
 append_session_end(struct thc *thc, uint32_t end)
 {
+    //DEBUG////////////////////////////
+    if (!thc->sbuf_size) {
+        shutdown("No THC session to stop.");
+    }
+    //DEBUG////////////////////////////
     struct thc_session *session;
     for(uint8_t i=0;i<thc->sbuf_size;i++) {
         session = &thc->sbuf[(thc->sbuf_current + i) % SESSION_BUFFER_SIZE];
@@ -181,6 +186,9 @@ append_session_end(struct thc *thc, uint32_t end)
             return;
         }
     }
+    //DEBUG////////////////////////////
+    shutdown("Cannot end session twice.");
+    //DEBUG////////////////////////////
 }
 
 // Schedule THC start

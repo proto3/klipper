@@ -33,6 +33,7 @@ class TorchHeightController:
         self.gcode.register_command("M6", self.cmd_M6)
         self.gcode.register_command("M7", self.cmd_M7)
         self.gcode.register_command("M8", self.cmd_M8)
+        self.gcode.register_command("FLUSH", self.cmd_flush)
         self.mcu.register_response(self._handle_sample, 'thc_sample')
         self.enable = False
         self.last_M7 = None
@@ -66,6 +67,7 @@ class TorchHeightController:
             str(voltage) + ' ' + str(xy_speed))
 
     def cmd_M6(self, gcmd):
+        # TODO z should be homed or unsync
         if not self.enable:
             voltage = gcmd.get_float('V', minval=0, maxval=300)
             min_xy_feedrate = gcmd.get_float('T', default=0) / 60
@@ -120,11 +122,22 @@ class TorchHeightController:
                            - self.mcu.estimated_print_time(now) + 0.05)
         self.last_M7 = None
 
+        # TODO z should be homed or unsync otherwise M8 will perform fake homing
         z_pos = self.z_stepper.resync_mcu_position()
         curpos = self.toolhead.get_position()
         self.toolhead.set_position([curpos[0], curpos[1], z_pos, curpos[3]],
                                    homing_axes=(0, 1, 2))
         self.gcode.reset_last_position()
+
+    def cmd_flush(self, params):
+        now = self.reactor.monotonic()
+        self.reactor.pause(now + self.toolhead.get_last_move_time() - self.mcu.estimated_print_time(now) + 0.05)
+
+        # now = self.reactor.monotonic()
+        # self.reactor.pause(now+3)
+        # self.mcu._handle_shutdown({'static_string_id':'Forced shutdown', '#name':self.mcu.get_name()})
+        # now = self.reactor.monotonic()
+        # self.reactor.pause(now+2)
 
 def load_config(config):
     return TorchHeightController(config)

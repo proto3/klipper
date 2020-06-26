@@ -100,6 +100,7 @@ class Plasma:
         self.plasma_start_cmd.send([self.plasma_oid, clock], reqclock=clock)
 
     def cmd_M5(self, gcmd):
+        #TODO add a mintime for plasma
         print_time = self.toolhead.get_last_move_time()
         clock = self.mcu.print_time_to_clock(print_time)
         if self.status == STATUS_ON:
