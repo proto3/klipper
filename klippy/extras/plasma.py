@@ -1,4 +1,4 @@
-# Support for plasma cutter
+# Support for plasma cutter control
 #
 # Copyright (C) 2020  Lucas Felix <lucas.felix0738@gmail.com>
 #
@@ -17,8 +17,7 @@ class Plasma:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         ppins = self.printer.lookup_object('pins')
-        start_pin_params = ppins.lookup_pin(config.get('start_pin'),
-                                            can_invert=True, can_pullup=True)
+        start_pin_params = ppins.lookup_pin(config.get('start_pin'))
         transfer_pin_params = ppins.lookup_pin(config.get('transfer_pin'),
                                                can_invert=True, can_pullup=True)
         self.mcu = start_pin_params['chip']
@@ -26,11 +25,12 @@ class Plasma:
         self.toolhead = None
 
         self.mcu.add_config_cmd("config_plasma oid=%d start_pin=%s"
-        " start_invert=%d transfer_pin=%s transfer_invert=%d transfer_pullup=%d"
-        " transfer_timeout_ms=%u" % (self.plasma_oid, start_pin_params['pin'],
-        start_pin_params['invert'], transfer_pin_params['pin'],
-        transfer_pin_params['invert'],transfer_pin_params['pullup'],
-        config.getint('transfer_timeout_ms')))
+            " transfer_pin=%s transfer_pullup=%d transfer_invert=%d"
+            " transfer_timeout_ms=%u" % (
+            self.plasma_oid, start_pin_params['pin'],
+            transfer_pin_params['pin'], transfer_pin_params['pullup'],
+            transfer_pin_params['invert'],
+            config.getint('transfer_timeout_ms')))
 
         self.cmd_queue = self.mcu.alloc_command_queue()
         self.ack_queue = self.mcu.alloc_command_queue()
