@@ -26,7 +26,7 @@ static inline int32_t div_pow2_32(int32_t x, uint8_t n) {
 struct thc_session {
     uint8_t x_stepper_oid, y_stepper_oid, z_stepper_oid, has_end;
     uint32_t begin, end, threshold;
-    int32_t target_mv, min_pos, max_pos;
+    int32_t target_mv, speed_coeff, min_pos, max_pos;
 };
 
 struct thc {
@@ -110,11 +110,12 @@ thc_toggle(struct thc* thc)
 void
 schedule_start(struct thc* thc, struct thc_session* session)
 {
-    thc->x_stepper = stepper_oid_lookup(session->x_stepper_oid);
-    thc->y_stepper = stepper_oid_lookup(session->y_stepper_oid);
-    thc->z_stepper = stepper_oid_lookup(session->z_stepper_oid);
-    thc->target_mv = session->target_mv;
-    thc->threshold = session->threshold;
+    thc->x_stepper   = stepper_oid_lookup(session->x_stepper_oid);
+    thc->y_stepper   = stepper_oid_lookup(session->y_stepper_oid);
+    thc->z_stepper   = stepper_oid_lookup(session->z_stepper_oid);
+    thc->target_mv   = session->target_mv;
+    thc->speed_coeff = session->speed_coeff;
+    thc->threshold   = session->threshold;
     thc->toggle_timer.func = toggle_event;
     thc->toggle_timer.waketime = session->begin;
 }
@@ -132,9 +133,8 @@ command_config_thc(uint32_t *args)
 {
     struct thc *thc = oid_alloc(args[0], command_config_thc, sizeof(*thc));
     thc->update_interval = CONFIG_CLOCK_FREQ / args[1];
-    thc->speed_coeff     = args[2];
-    thc->a_coeff         = args[3];
-    thc->b_coeff         = args[4];
+    thc->a_coeff         = args[2];
+    thc->b_coeff         = args[3];
     thc->flags           = 0;
     thc->sbuf_current    = 0;
     thc->sbuf_size       = 0;
@@ -146,7 +146,7 @@ command_config_thc(uint32_t *args)
     i2c_write(thc->i2c_config, 3, ads1015_conf);
 }
 DECL_COMMAND(command_config_thc,
-             "config_thc oid=%c rate=%u speed_coeff=%u a_coeff=%u b_coeff=%u");
+             "config_thc oid=%c rate=%u a_coeff=%i b_coeff=%i");
 
 // Return the 'struct thc' for a given thc oid
 struct thc *
@@ -194,9 +194,10 @@ command_start_thc(uint32_t *args)
     session->z_stepper_oid = args[3];
     session->begin         = args[4];
     session->target_mv     = args[5];
-    session->threshold     = args[6];
-    session->min_pos       = args[7];
-    session->max_pos       = args[8];
+    session->speed_coeff   = args[6];
+    session->threshold     = args[7];
+    session->min_pos       = args[8];
+    session->max_pos       = args[9];
     session->has_end       = 0;
 
     // if no pending toggle, kick timer
@@ -207,7 +208,8 @@ command_start_thc(uint32_t *args)
 }
 DECL_COMMAND(command_start_thc,
           "start_thc oid=%c x_stepper_oid=%c y_stepper_oid=%c z_stepper_oid=%c"
-          " clock=%u voltage_mv=%i threshold=%i min_pos=%i max_pos=%i");
+          " clock=%u voltage_mv=%i speed_coeff=%i threshold=%u min_pos=%i"
+          " max_pos=%i");
 
 // Schedule THC stop
 void

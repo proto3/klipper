@@ -305,7 +305,7 @@ host_watchdog_reset(void)
 void
 check_host_watchdog_task(void)
 {
-    uint32_t timeout = last_time_received + 2 * CONFIG_CLOCK_FREQ;
+    uint32_t timeout = last_time_received + CONFIG_CLOCK_FREQ;
     if(host_watchdog_init && timer_is_before(timeout, timer_read_time())) {
         shutdown("Host host_watchdog timeout.");
     }

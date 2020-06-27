@@ -400,13 +400,11 @@ speed_mode_update(struct stepper *s)
     if(dist_to_min <= steps_to_stop)
     {
         int32_t limit = sqrt((float)s->spdm.max_acc * dist_to_min);
-        limit = max(0, limit);
         s->spdm.target_speed = max(s->spdm.target_speed, -limit);
     }
     if(dist_to_max <= steps_to_stop)
     {
         int32_t limit = sqrt((float)s->spdm.max_acc * dist_to_max);
-        limit = max(0, limit);
         s->spdm.target_speed = min(s->spdm.target_speed, limit);
     }
 

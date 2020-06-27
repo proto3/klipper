@@ -15,10 +15,11 @@ class TorchHeightController:
         self.x_stepper = self.y_stepper = self.z_stepper = None
 
         self.thc_oid = self.mcu.create_oid()
-        self.mcu.add_config_cmd("config_thc oid=%d rate=%u speed_coeff=%u"
-            " a_coeff=%u b_coeff=%u" % (self.thc_oid, config.getint('rate'),
-            config.getint('speed_coeff'), config.getfloat('a_coeff')*(2**10),
+        self.mcu.add_config_cmd("config_thc oid=%d rate=%u a_coeff=%i"
+            " b_coeff=%i" % (self.thc_oid, config.getint('rate'),
+            config.getfloat('a_coeff')*(2**10),
             config.getfloat('b_coeff')*1000))
+        self.speed_coeff = config.getint('speed_coeff')
 
         self.cmd_queue = self.mcu.alloc_command_queue()
         self.mcu.register_config_callback(self.build_config)
@@ -43,9 +44,11 @@ class TorchHeightController:
         self.z_stepper = z_rail.steppers[0]
         self.abs_min_z_pos = z_rail.position_min
         self.abs_max_z_pos = z_rail.position_max
+        if self.z_stepper.is_dir_inverted():
+            self.speed_coeff = -self.speed_coeff
         self.thc_start_cmd = self.mcu.lookup_command("start_thc oid=%c"
             " x_stepper_oid=%c y_stepper_oid=%c z_stepper_oid=%c clock=%u"
-            " voltage_mv=%i threshold=%i min_pos=%i max_pos=%i",
+            " voltage_mv=%i speed_coeff=%i threshold=%u min_pos=%i max_pos=%i",
             cq=self.cmd_queue)
         self.thc_stop_cmd = self.mcu.lookup_command(
             "stop_thc oid=%c clock=%u", cq=self.cmd_queue)
@@ -63,7 +66,11 @@ class TorchHeightController:
     def cmd_M6(self, gcmd):
         if not self.enable:
             voltage = gcmd.get_float('V', minval=0, maxval=300)
-            feedrate_threshold = gcmd.get_float('T', default=0, minval=0) / 60
+            min_xy_feedrate = gcmd.get_float('T', default=0) / 60
+            if min_xy_feedrate < 0:
+                threshold = 0xFFFFFFFF
+            else:
+                threshold = int(min_xy_feedrate**2)
 
             min_z_pos = gcmd.get_float('A', default=self.abs_min_z_pos,
                 minval=self.abs_min_z_pos, maxval=self.abs_max_z_pos)
@@ -84,8 +91,8 @@ class TorchHeightController:
             self.thc_start_cmd.send(
                 [self.thc_oid, self.x_stepper._oid, self.y_stepper._oid,
                  self.z_stepper._oid, clock, int(voltage  * 1000),
-                 int(feedrate_threshold**2), min_mcu_z_pos, max_mcu_z_pos],
-                reqclock=clock)
+                 self.speed_coeff, threshold, min_mcu_z_pos, max_mcu_z_pos],
+                 reqclock=clock)
             self.enable = True
         else:
             self.gcode._respond_error('THC already ON')
