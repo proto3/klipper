@@ -14,7 +14,7 @@
 #define PLASMA_OFF 0
 #define PLASMA_ON  1
 
-#define MONITOR_FREQ 1000
+#define MONITOR_FREQ 20
 #define SEND_STATUS_FREQ 5
 
 #define MSG_STATUS_BIT 0
