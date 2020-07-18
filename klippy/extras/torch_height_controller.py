@@ -19,7 +19,9 @@ class TorchHeightController:
             " b_coeff=%i" % (self.thc_oid, config.getint('rate'),
             config.getfloat('a_coeff')*(2**10),
             config.getfloat('b_coeff')*1000))
-        self.speed_coeff = config.getint('speed_coeff')
+        # conversion from volts to milivolts
+        mm_per_s_per_mv = config.getfloat('speed_coeff') / 1000
+        self.speed_coeff = int(mm_per_s_per_mv * 2**14)
 
         self.cmd_queue = self.mcu.alloc_command_queue()
         self.mcu.register_config_callback(self.build_config)

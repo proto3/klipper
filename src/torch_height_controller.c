@@ -243,8 +243,15 @@ thc_update(struct thc *thc)
     int32_t voltage_mv = read_voltage_mv(thc);
     uint32_t xy_speed_squared = pow(stepper_speed(thc->x_stepper), 2) +
                                 pow(stepper_speed(thc->y_stepper), 2);
-    int32_t target_speed = (xy_speed_squared >= thc->threshold) ?
-                           (voltage_mv - thc->target_mv) * thc->speed_coeff : 0;
+    int32_t target_speed;
+    if(xy_speed_squared >= thc->threshold) {
+        int32_t error_mv = voltage_mv - thc->target_mv;
+        target_speed = div_pow2_32(error_mv * thc->speed_coeff, 14);
+    }
+    else {
+        target_speed = 0;
+    }
+
     irq_disable();
     stepper_set_target_speed(thc->z_stepper, target_speed);
     int32_t z_pos = stepper_position(thc->z_stepper);
