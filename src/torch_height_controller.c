@@ -1,4 +1,4 @@
-// Support for torch height controller.
+// Support for torch height controller
 //
 // Copyright (C) 2020  Lucas Felix <lucas.felix0738@gmail.com>
 //

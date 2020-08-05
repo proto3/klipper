@@ -1,4 +1,4 @@
-# Support for torch height controller.
+# Support for torch height controller
 #
 # Copyright (C) 2020  Lucas Felix <lucas.felix0738@gmail.com>
 #
@@ -105,15 +105,12 @@ class TorchHeightController:
             clock = self.mcu.print_time_to_clock(self.last_M7)
             self.thc_stop_cmd.send([self.thc_oid, clock], reqclock=clock)
             self.enable = False
-        else:
-            self.gcode._respond_error('THC already OFF')
 
     def cmd_M8(self, gcmd):
         if self.enable:
             self.gcode._respond_error('Cannot resync with THC running.')
             return
         if self.last_M7 is None:
-            self.gcode.respond_info('No need to resync.')
             return
 
         # M8 has to be blocking to ensure not trying to synchronize before M7
