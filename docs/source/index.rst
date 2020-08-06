@@ -3,15 +3,14 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Klipper-plasma: a Klipper fork for CNC plasma
-==========================================================================
-Klipper-plasma is forked from Klipper to control a plasma CNC machine instead of
-a 3D printer. It provides plasma control G-Codes and a software THC.
+Klipper-plasma: CNC plasma controller
+=====================================
 
 .. toctree::
     :maxdepth: 2
-    :hidden:
-    :caption: Getting started
 
-    intro/introduction
-    intro/installation
+    introduction
+    installation
+    commands
+    hardware
+    developers
