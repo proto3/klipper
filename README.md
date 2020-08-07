@@ -1,9 +1,17 @@
 [![Documentation Status](https://readthedocs.org/projects/klipper-plasma/badge/?version=latest)](https://klipper-plasma.readthedocs.io/en/latest/?badge=latest)
 
-This is a Klipper fork dedicated to plasma CNC machine, work is still in progress and any help is welcome !
+# Klipper for Plasma
 
-**IMPORTANT : This is not a stable version, it looks functional but still, many safety features are missing and plasma could stayed fired with unintended consequences. If you plan to give it a try, please don't do it on the real machine.**
+This is a Klipper fork dedicated to plasma CNC machines, work is still in progress and any help is welcome !
 
-Compared to original Klipper it adds :
-- Software THC (Torch Height Control) with realtime display of voltage and Z position for easy PID tuning. I plan to implement speed based THC to prevent torch diving on corners.
-- Immediate stepper reaction to trigger motions from external events (like plasma ignition). Klipper all-buffered architecture wouldn't normally allow for immediate reaction.
+**IMPORTANT : This is not a stable release. It is currently in use on a real machine and performs fine, but there are still many input protections missing. A non experienced user can send invalid gcode sequence leading to unattended consequences.**
+
+You can read [documentation here](https://klipper-plasma.readthedocs.io), or have a look at [Sheetah](https://github.com/proto3/Sheetah), a plasma CAM software designed to work in pair with Klipper and enabling THC graphical monitoring.
+
+## Features
+- Everything from the original Klipper. This version will kept rebased on official as long as possible to benefits from updates and bugfixes.
+- Integrated THC (Torch Height Control).
+- THC real-time monitoring.
+- THC anti-dive, z axis pauses under a specified feedrate.
+- Instant stepper reactivity, required for precise piercing delays but not possible with original Klipper implementation.
+- Various plasma related safety improvements (PC independant emergency stop, input commands timeout during cuts, serial link loss detection)
